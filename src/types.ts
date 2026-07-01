@@ -95,6 +95,11 @@ export interface ComparisonReport {
   comparison: Record<string, string>; // analytical notes
 }
 
+export interface AgentMetric {
+  latency: number;
+  success: boolean;
+}
+
 export interface PipelineExecutionState {
   status: 'idle' | 'running_agent_1' | 'running_agent_2' | 'running_agent_3' | 'running_agent_4' | 'running_agent_5' | 'completed' | 'failed';
   currentStepMessage: string;
@@ -105,6 +110,7 @@ export interface PipelineExecutionState {
   agent4Output?: BrandIdentity;
   agent5Output?: EvaluationReport;
   comparisonOutput?: ComparisonReport;
+  agentMetrics?: Record<number, AgentMetric>;
 }
 
 // Vector Database KB schemas

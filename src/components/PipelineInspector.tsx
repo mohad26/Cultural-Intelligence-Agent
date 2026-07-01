@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import { PipelineExecutionState, PipelineResponse } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Check, ShieldAlert, Cpu, Terminal, FileCode, Award, Brush, Globe, BookOpen, AlertCircle, Sparkles, MapPin, Compass } from 'lucide-react';
+import { Play, Check, ShieldAlert, Cpu, Terminal, FileCode, Award, Brush, Globe, BookOpen, AlertCircle, Sparkles, MapPin, Compass, BarChart2 } from 'lucide-react';
+import AgentMetricsDashboard from './AgentMetricsDashboard';
 
 interface PipelineInspectorProps {
   state: PipelineExecutionState;
 }
 
 export default function PipelineInspector({ state }: PipelineInspectorProps) {
-  const [activeTab, setActiveTab] = useState<'visual' | 'logs' | 'raw_json'>('visual');
+  const [activeTab, setActiveTab] = useState<'visual' | 'logs' | 'raw_json' | 'metrics'>('visual');
   const [selectedAgentJson, setSelectedAgentJson] = useState<number>(4); // Default to Brand Generation (Agent 4)
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -139,6 +140,18 @@ export default function PipelineInspector({ state }: PipelineInspectorProps) {
             }`}
           >
             Structured JSON
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('metrics')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 ${
+              activeTab === 'metrics' ? 'bg-white/10 text-white border border-white/10 shadow-sm font-bold font-sans' : 'text-slate-400 hover:text-white font-sans'
+            }`}
+          >
+            <BarChart2 className="w-3.5 h-3.5 text-indigo-400" /> Agent Metrics
+            {state.status.startsWith('running') && (
+              <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-ping" />
+            )}
           </button>
         </div>
       </div>
@@ -468,6 +481,18 @@ export default function PipelineInspector({ state }: PipelineInspectorProps) {
                   </div>
                 </div>
               )}
+            </motion.div>
+          )}
+
+          {/* Active Tab: Agent Metrics Dashboard */}
+          {activeTab === 'metrics' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              <AgentMetricsDashboard state={state} />
             </motion.div>
           )}
 
