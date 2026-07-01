@@ -1,0 +1,6 @@
+{
+  "name": "Cultural Intelligence Agent",
+  "description": "Multi-agent Cultural Intelligence Agent simulating open-source LLM pipelines, RAG vector lookup, and agent evaluations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
