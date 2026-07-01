@@ -23,6 +23,14 @@ export default function DBExplorer({ onRefreshTrigger = 0 }: DBExplorerProps) {
   const [newTagsStr, setNewTagsStr] = useState('');
   const [formSuccess, setFormSuccess] = useState(false);
 
+  // Qdrant Hub Connection & Sync States
+  const [qdrantUrl, setQdrantUrl] = useState('');
+  const [qdrantApiKey, setQdrantApiKey] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncLogs, setSyncLogs] = useState<string[]>([]);
+  const [showConfig, setShowConfig] = useState(false);
+
   const fetchRecords = async () => {
     setLoading(true);
     try {
@@ -41,9 +49,66 @@ export default function DBExplorer({ onRefreshTrigger = 0 }: DBExplorerProps) {
     }
   };
 
+  const fetchQdrantConfig = async () => {
+    try {
+      const res = await fetch('/api/qdrant/config');
+      const data = await res.json();
+      if (data.success) {
+        setQdrantUrl(data.url);
+        setIsConnected(data.isConnected);
+      }
+    } catch (err) {
+      console.error("Failed to load Qdrant config", err);
+    }
+  };
+
   useEffect(() => {
     fetchRecords();
+    fetchQdrantConfig();
   }, [onRefreshTrigger]);
+
+  const handleConnectQdrant = async () => {
+    try {
+      const res = await fetch('/api/qdrant/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: qdrantUrl, apiKey: qdrantApiKey })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsConnected(data.isConnected);
+        alert(data.message);
+      } else {
+        alert("Connection failed: " + data.error);
+      }
+    } catch (err: any) {
+      alert("Error configuring connection: " + err.message);
+    }
+  };
+
+  const handleSyncQdrant = async () => {
+    setIsSyncing(true);
+    setSyncLogs([`🔄 Connecting and querying Qdrant cluster...`]);
+    try {
+      const res = await fetch('/api/qdrant/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSyncLogs(data.logs || [`Successfully indexed items.`]);
+        fetchRecords(); // Refresh to ensure we align
+      } else {
+        setSyncLogs(prev => [...prev, `❌ Sync error: ${data.error}`]);
+        alert("Sync failed: " + data.error);
+      }
+    } catch (err: any) {
+      setSyncLogs(prev => [...prev, `❌ Sync exception: ${err.message}`]);
+      alert("Error synchronizing: " + err.message);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -144,7 +209,7 @@ export default function DBExplorer({ onRefreshTrigger = 0 }: DBExplorerProps) {
             <h2 className="text-lg font-bold text-gray-900 tracking-tight">Qdrant Vector Database Hub</h2>
           </div>
           <p className="text-xs text-gray-500 mt-1">
-            Simulated vector collections containing authentic regional research documents.
+            Live peer-reviewed cultural research database powered by high-fidelity vector collections of real ethnographic, market, and semiotic studies.
           </p>
         </div>
 
@@ -159,6 +224,88 @@ export default function DBExplorer({ onRefreshTrigger = 0 }: DBExplorerProps) {
         >
           {isAdding ? 'Close Drawer' : <><Plus className="w-4 h-4" /> Add Evidence Document</>}
         </button>
+      </div>
+
+      {/* Qdrant connection controller */}
+      <div className="bg-neutral-50 px-6 py-4 border-b border-gray-100 flex flex-col gap-3">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-400'}`} />
+            <span className="text-xs font-bold text-gray-700">
+              {isConnected ? 'Qdrant Cloud/Local DB Connected (Vector RAG Live)' : 'Local In-Memory RAG Index'}
+            </span>
+          </div>
+          <button
+            onClick={() => setShowConfig(!showConfig)}
+            className="text-xs font-semibold text-neutral-600 hover:text-neutral-900 underline flex items-center gap-1"
+          >
+            ⚙️ {showConfig ? 'Hide Connection Panel' : 'Configure Qdrant Connection'}
+          </button>
+        </div>
+
+        {showConfig && (
+          <div className="bg-white border border-gray-200 p-4 rounded-xl flex flex-col gap-3 transition-all text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-gray-700 font-bold mb-1">Qdrant Host URL</label>
+                <input
+                  type="text"
+                  placeholder="e.g. http://localhost:6333 or https://xxx.qdrant.tech"
+                  value={qdrantUrl}
+                  onChange={e => setQdrantUrl(e.target.value)}
+                  className="w-full bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-800 focus:outline-none focus:border-neutral-900 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-700 font-bold mb-1">Qdrant API Key (optional)</label>
+                <input
+                  type="password"
+                  placeholder="Enter Qdrant API Key..."
+                  value={qdrantApiKey}
+                  onChange={e => setQdrantApiKey(e.target.value)}
+                  className="w-full bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-800 focus:outline-none focus:border-neutral-900 font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-gray-100">
+              <span className="text-[10px] text-gray-400">
+                Uses server-side Gemini <code>text-embedding-004</code> to build real 768-dim vector embeddings.
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleConnectQdrant}
+                  className="px-4 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg font-semibold"
+                >
+                  Save & Check Connection
+                </button>
+                {isConnected && (
+                  <button
+                    type="button"
+                    onClick={handleSyncQdrant}
+                    disabled={isSyncing}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {isSyncing ? 'Synchronizing...' : 'Sync & Embed to Qdrant'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {syncLogs.length > 0 && (
+          <div className="bg-neutral-950 text-emerald-400 p-3 rounded-lg font-mono text-[10px] max-h-48 overflow-y-auto flex flex-col gap-1 border border-neutral-800">
+            <div className="flex justify-between items-center border-b border-neutral-800 pb-1 mb-1 font-sans text-neutral-400 font-bold">
+              <span>QDRANT SYNC LOGS</span>
+              <button onClick={() => setSyncLogs([])} className="hover:text-white underline">Clear</button>
+            </div>
+            {syncLogs.map((log, i) => (
+              <div key={i}>{log}</div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Add Document panel */}

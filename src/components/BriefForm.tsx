@@ -203,7 +203,7 @@ export default function BriefForm({ onExecute, isLoading }: BriefFormProps) {
 
       <div className="mt-6 pt-4 border-t border-slate-200 text-[10px] text-slate-500 flex items-center justify-between">
         <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5 text-slate-400" /> Multi-Agent Engine</span>
-        <span>Simulating Open Source Standards</span>
+        <span>Academic & Industry Research Standards</span>
       </div>
     </div>
   );

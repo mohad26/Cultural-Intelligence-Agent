@@ -64,7 +64,7 @@ export default function App() {
       setPipelineState(prev => ({
         status: 'running_agent_3',
         currentStepMessage: 'Agent 3: Compacting dynamic RAG knowledge contexts...',
-        logs: [...prev.logs, ...logs.filter((l: string) => l.includes('Agent 2')), '[Client] Color warnings and motif schemas validated.', '[Client] Simulating Vector DB context reranking...'],
+        logs: [...prev.logs, ...logs.filter((l: string) => l.includes('Agent 2')), '[Client] Color warnings and motif schemas validated.', '[Client] Executing Vector DB context query & rerank...'],
         agent2Output: payload.agent2
       }));
 

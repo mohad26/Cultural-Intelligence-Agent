@@ -3,8 +3,8 @@ import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { dbInstance } from "./src/knowledge_base";
-import { BriefInput, PipelineResponse, ColorRecommendation } from "./src/types";
+import { dbInstance, INITIAL_KB } from "./src/knowledge_base";
+import { BriefInput, PipelineResponse, ColorRecommendation, KBCollection } from "./src/types";
 
 dotenv.config();
 
@@ -36,6 +36,10 @@ function getGeminiClient(): GoogleGenAI | null {
   }
   return aiClient;
 }
+
+// Qdrant active connection configuration
+let activeQdrantUrl: string | null = process.env.QDRANT_URL || null;
+let activeQdrantApiKey: string | null = process.env.QDRANT_API_KEY || null;
 
 // REST endpoints for the Vector DB knowledge collections
 app.get("/api/kb", (req, res) => {
@@ -76,6 +80,265 @@ app.delete("/api/kb/:id", (req, res) => {
   }
 });
 
+// Qdrant Configuration and Seeding Endpoints
+app.get("/api/qdrant/config", (req, res) => {
+  res.json({
+    success: true,
+    url: activeQdrantUrl || "",
+    hasApiKey: !!activeQdrantApiKey,
+    isConnected: !!activeQdrantUrl
+  });
+});
+
+app.post("/api/qdrant/config", async (req, res) => {
+  try {
+    const { url, apiKey } = req.body;
+    
+    if (!url) {
+      activeQdrantUrl = null;
+      activeQdrantApiKey = null;
+      return res.json({ success: true, message: "Cleared Qdrant connection; fell back to local index.", isConnected: false });
+    }
+
+    // Clean trailing slashes
+    const cleanUrl = url.replace(/\/+$/, "");
+
+    // Test connectivity by querying the /readyz or collections endpoint
+    const testRes = await fetch(`${cleanUrl}/collections`, {
+      method: "GET",
+      headers: apiKey ? { "api-key": apiKey } : {}
+    });
+
+    if (testRes.ok) {
+      activeQdrantUrl = cleanUrl;
+      activeQdrantApiKey = apiKey || null;
+      res.json({
+        success: true,
+        message: "Successfully connected to external Qdrant Vector Database instance!",
+        isConnected: true
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: `Could not connect: Qdrant returned status ${testRes.status}`,
+        isConnected: false
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: `Connection failed: ${err.message}`,
+      isConnected: false
+    });
+  }
+});
+
+app.post("/api/qdrant/sync", async (req, res) => {
+  const syncLogs: string[] = [];
+  const url = activeQdrantUrl;
+  const apiKey = activeQdrantApiKey;
+
+  if (!url) {
+    return res.status(400).json({ success: false, error: "Qdrant connection not configured. Set connection parameters first." });
+  }
+
+  const client = getGeminiClient();
+  if (!client) {
+    return res.status(400).json({ success: false, error: "Gemini client not initialized. Ensure GEMINI_API_KEY is configured in the secrets panel to enable vector generation." });
+  }
+
+  try {
+    syncLogs.push(`🔄 Initiating Qdrant Vector Synchronization & Seeding...`);
+    const collections: KBCollection[] = ["cultural_kb", "semiotic_kb", "market_kb", "branding_cases"];
+
+    for (const coll of collections) {
+      syncLogs.push(`Creating collection '${coll}' in Qdrant with 768-dim vector space (text-embedding-004 standard)...`);
+      
+      // Delete existing collection if any
+      await fetch(`${url}/collections/${coll}`, {
+        method: "DELETE",
+        headers: apiKey ? { "api-key": apiKey } : {}
+      });
+
+      // Create new collection
+      const createRes = await fetch(`${url}/collections/${coll}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "api-key": apiKey } : {})
+        },
+        body: JSON.stringify({
+          vectors: {
+            size: 768,
+            distance: "Cosine"
+          }
+        })
+      });
+
+      if (!createRes.ok) {
+        throw new Error(`Failed to create Qdrant collection '${coll}': ${await createRes.text()}`);
+      }
+      syncLogs.push(`✅ Collection '${coll}' successfully created.`);
+    }
+
+    // Seed documents
+    const allRecords = dbInstance.getAll();
+    syncLogs.push(`Embedding and indexing ${allRecords.length} authentic academic documents into Qdrant...`);
+
+    for (const doc of allRecords) {
+      syncLogs.push(`Generating real multi-dimensional vector for: '${doc.title.substring(0, 35)}...'`);
+      
+      const embedRes = await client.models.embedContent({
+        model: "text-embedding-004",
+        contents: `${doc.title}\n\n${doc.content}`,
+      });
+
+      const rawRes = embedRes as any;
+      const embeddingObj = rawRes.embedding || rawRes.embeddings;
+      const vector = Array.isArray(embeddingObj) ? embeddingObj[0]?.values : embeddingObj?.values;
+
+      if (!vector) {
+        throw new Error(`Could not generate vector embedding for document: ${doc.id}`);
+      }
+
+      // Dynamic unique point numerical ID from hash of the document's string ID
+      let numId = 0;
+      for (let i = 0; i < doc.id.length; i++) {
+        numId = (numId << 5) - numId + doc.id.charCodeAt(i);
+      }
+      numId = Math.abs(numId);
+
+      const upsertRes = await fetch(`${url}/collections/${doc.collection}/points?wait=true`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "api-key": apiKey } : {})
+        },
+        body: JSON.stringify({
+          points: [
+            {
+              id: numId,
+              vector,
+              payload: {
+                id: doc.id,
+                collection: doc.collection,
+                market: doc.market,
+                category: doc.category,
+                title: doc.title,
+                content: doc.content,
+                tags: doc.tags
+              }
+            }
+          ]
+        })
+      });
+
+      if (!upsertRes.ok) {
+        throw new Error(`Failed to upsert point for document '${doc.id}': ${await upsertRes.text()}`);
+      }
+    }
+
+    syncLogs.push(`🎉 Vector index synchronization complete! All ${allRecords.length} documents embedded and loaded into Qdrant.`);
+    res.json({ success: true, logs: syncLogs });
+  } catch (err: any) {
+    syncLogs.push(`❌ Synchronization failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message, logs: syncLogs });
+  }
+});
+
+/**
+ * Unified Vector Search Utility:
+ * Checks if an active Qdrant cluster is connected and a Gemini API Client exists.
+ * If yes, generates true query embeddings and performs high-fidelity vector searches.
+ * If not, falls back gracefully to local index searches.
+ */
+async function performVectorSearch(
+  collection: KBCollection,
+  query: string,
+  market: string,
+  logs: string[]
+): Promise<{ evidenceItems: any[] }> {
+  const client = getGeminiClient();
+  const url = activeQdrantUrl;
+  const apiKey = activeQdrantApiKey;
+
+  if (url && client) {
+    logs.push(`🌐 [Qdrant Active Router] RAG Vector Search: [${collection}]...`);
+    try {
+      logs.push(`  Generating query vector embedding via Gemini 'text-embedding-004' (768 Dimensions)...`);
+      const embedRes = await client.models.embedContent({
+        model: "text-embedding-004",
+        contents: query,
+      });
+      const rawRes = embedRes as any;
+      const embeddingObj = rawRes.embedding || rawRes.embeddings;
+      const vector = Array.isArray(embeddingObj) ? embeddingObj[0]?.values : embeddingObj?.values;
+
+      if (!vector) {
+        logs.push(`  ⚠️ Embedding failed. Routing fallback to local token-overlap engine.`);
+      } else {
+        logs.push(`  Performing true cosine-similarity search in Qdrant collection '${collection}'...`);
+        
+        // Setup simple matching filter based on target market
+        let filterValue = market;
+        if (market.toLowerCase().includes("arab") || market.toLowerCase().includes("middle east") || market.toLowerCase().includes("gcc")) {
+          filterValue = "Arab Markets";
+        } else if (market.toLowerCase().includes("austral") || market.toLowerCase().includes("sydney")) {
+          filterValue = "Australia";
+        } else if (market.toLowerCase().includes("japan") || market.toLowerCase().includes("tokyo")) {
+          filterValue = "Japan";
+        }
+
+        const searchRes = await fetch(`${url}/collections/${collection}/points/search`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(apiKey ? { "api-key": apiKey } : {})
+          },
+          body: JSON.stringify({
+            vector,
+            limit: 3,
+            filter: {
+              must: [
+                {
+                  key: "market",
+                  match: { value: filterValue }
+                }
+              ]
+            },
+            with_payload: true
+          })
+        });
+
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const hits = searchData.result || [];
+          logs.push(`  ✅ Qdrant search successful. Found ${hits.length} matching nodes.`);
+          
+          if (hits.length > 0) {
+            const items = hits.map((h: any) => h.payload);
+            hits.forEach((h: any, idx: number) => {
+              logs.push(`    [Cosine Hit ${idx+1}] ID: ${h.payload.id} | Score: ${h.score.toFixed(4)} | Title: ${h.payload.title}`);
+            });
+            return { evidenceItems: items };
+          } else {
+            logs.push(`  ⚠️ Qdrant search returned 0 items matching market filters. Falling back to local index.`);
+          }
+        } else {
+          logs.push(`  ❌ Qdrant search request failed (status ${searchRes.status}): ${await searchRes.text()}. Falling back to local.`);
+        }
+      }
+    } catch (err: any) {
+      logs.push(`  ❌ Connection to Qdrant cluster error: ${err.message}. Routing gracefully to fallback.`);
+    }
+  }
+
+  // Fallback to high-performance local index search
+  logs.push(`🔍 [Local Search Fallback] Triggering local index matching for '${query.substring(0, 30)}...'`);
+  const localRes = dbInstance.search(collection, query, market);
+  return { evidenceItems: localRes.evidenceItems };
+}
+
 /**
  * Executes the complete 5-Agent Multi-Agent Branding and Evaluation Pipeline
  */
@@ -108,22 +371,19 @@ app.post("/api/brand/generate", async (req, res) => {
     // ==== STEP 1 & 3: RAG Retrieval to retrieve evidence for Agent 1 and Agent 2 ====
     // Agent 1 queries cultural_kb
     executionLogs.push(`🔍 Agent 3: Triggering KB RAG vector lookups (cultural_kb)...`);
-    const culturalKBData = dbInstance.search("cultural_kb", `${brief.product_category} ${brief.market}`, brief.market);
-    executionLogs.push(...culturalKBData.logs);
+    const culturalKBData = await performVectorSearch("cultural_kb", `${brief.product_category} ${brief.market}`, brief.market, executionLogs);
 
     // Agent 2 queries semiotic_kb
     executionLogs.push(`🔍 Agent 3: Triggering KB RAG vector lookups (semiotic_kb)...`);
-    const semioticKBData = dbInstance.search("semiotic_kb", `${brief.product_category} visual colors typography`, brief.market);
-    executionLogs.push(...semioticKBData.logs);
+    const semioticKBData = await performVectorSearch("semiotic_kb", `${brief.product_category} visual colors typography`, brief.market, executionLogs);
 
     // General market RAG search (market_kb & branding_cases)
     executionLogs.push(`🔍 Agent 3: Triggering KB RAG vector lookups (market_kb)...`);
-    const marketKBData = dbInstance.search("market_kb", `${brief.product_category} trends`, brief.market);
-    executionLogs.push(...marketKBData.logs);
+    const marketKBData = await performVectorSearch("market_kb", `${brief.product_category} trends`, brief.market, executionLogs);
 
     executionLogs.push(`🔍 Agent 3: Triggering KB RAG vector lookups (branding_cases)...`);
-    const casesKBData = dbInstance.search("branding_cases", `${brief.product_category} branding cases names`, brief.market);
-    executionLogs.push(...casesKBData.logs);
+    const casesKBData = await performVectorSearch("branding_cases", `${brief.product_category} branding cases names`, brief.market, executionLogs);
+
 
     // Concatenate all citations/evidence
     const citations = [
